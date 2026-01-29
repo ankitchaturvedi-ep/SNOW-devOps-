@@ -42,3 +42,15 @@ jobs:
         run: smth
       - name: Go 
         run: deno test B
+
+  deploy:
+    name: build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to prod
+        run: smth
+      - name: Setup Env
+        run: smth
+      - name: Go Live
+        run: deno test B
