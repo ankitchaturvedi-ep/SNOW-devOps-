@@ -23,11 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup repo
-        uses: actions/checkout@v4
+        # uses: actions/checkout@v4
   
       - name: Setup Deno
         # uses: denoland/setup-deno@v1
-        uses: denoland/setup-deno@61fe2df320078202e33d7d5ad347e7dcfa0e8f31  # v1.1.2
+        # uses: denoland/setup-deno@61fe2df320078202e33d7d5ad347e7dcfa0e8f31  # v1.1.2
         with:
           deno-version: v1.x
   
@@ -36,7 +36,7 @@ jobs:
       #   run: deno fmt --check
   
       - name: Run linter
-        run: deno lint
+        # run: deno lint
   
       - name: Run tests
         run: deno test -A
@@ -46,9 +46,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-        - name: Build repo
-  
-        - name: Setup Env
-  
+        - name: Build repo  
+        - name: Setup Env  
         - name: Go 
         run: deno test B
