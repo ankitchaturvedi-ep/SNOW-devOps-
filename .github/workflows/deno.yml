@@ -23,34 +23,60 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Setup repo
-      run: smth
+      uses: actions/checkout@v4
+      
     - name: Setup Deno
-      run: echo "Setting up Deno..."
-    # - name: Run linter
-    #   run: smth
-    # - name: Run tests
-    #   run: smth #deno test -A
+      uses: denoland/setup-deno@v1
+      with:
+        deno-version: v1.x
+        
+    - name: Run linter
+      run: deno lint
+      
+    - name: Run tests
+      run: deno test -A
           
   build:
     name: Build
     needs: test
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        
+      - name: Setup Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+          
       - name: Build repo
         run: echo "Building..."
-      # - name: Setup Env
-      #   run: smth
-      # - name: Go 
-      #   run: deno test B
 
-  deploy:
-    name: Deploy
+  servicenow:
+    name: ServiceNow Integration
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        
+      - name: Integrate with ServiceNow
+        run: echo "Integrating with ServiceNow..."
+        
+      - name: Post results to ServiceNow
+        run: echo "Posting results..."
+  deploy:
+    name: Deploy
+    needs: [build, servicenow]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        
+      - name: Setup Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+          
       - name: Deploy to prod
         run: echo "Deploying..."
-      # - name: Setup Env
-      #   run: smth
-      # - name: Go Live
-      #   run: deno test B
