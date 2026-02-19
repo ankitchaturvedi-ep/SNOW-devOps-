@@ -107,6 +107,9 @@ jobs:
           abortOnChangeCreationFailure: true
           abortOnChangeStepTimeout: true
           deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
+          
+      - name: Output of Change Creation
+        run: echo "change-request-number = ${{ steps.create.outputs.change-request-number }} and change-request-sys-id = ${{ steps.create.outputs.change-request-sys-id }} " >> $GITHUB_OUTPUT
 
       - name: ServiceNow Update Change
         continue-on-error: true
