@@ -107,15 +107,6 @@ jobs:
           abortOnChangeCreationFailure: true
           abortOnChangeStepTimeout: true
           deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
-      - name: ServiceNow Get Change
-        continue-on-error: true
-        uses: ServiceNow/servicenow-devops-get-change@v3.1.0
-        with:
-          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
-          instance-url: ${{ secrets.SN_INSTANCE_URL }}
-          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
-          context-github: ${{ toJSON(github) }}
-          change-details: '{"build_number":"21","pipeline_name":"CI_Pipeline","stage_name":"Create_Change","attempt_number":"1"}'
 
       - name: ServiceNow Update Change
         continue-on-error: true
