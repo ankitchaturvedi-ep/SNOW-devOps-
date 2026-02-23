@@ -72,22 +72,17 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
 
-    # Do NOT call ServiceNow on PRs (especially fork PRs) where secrets may be unavailable.
+    # Never call ServiceNow from PRs (especially fork PRs) where secrets may be blocked.
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Deno
-        uses: denoland/setup-deno@v1
-        with:
-          deno-version: v1.x
-
       - name: Deploy to prod
         run: echo "Deploying..."
 
-      - name: Preflight ServiceNow secrets (safe)
+      - name: Preflight ServiceNow secrets
         run: |
           test -n "${{ secrets.SN_INSTANCE_URL }}" || (echo "Missing SN_INSTANCE_URL" && exit 1)
           test -n "${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}" || (echo "Missing SN_DEVOPS_INTEGRATION_TOKEN" && exit 1)
@@ -105,18 +100,19 @@ jobs:
           context-github: ${{ toJSON(github) }}
           job-name: "Deploy"
 
-          # Minimal payload aligned to your instance UI (Category DevOps, Priority 4-Low, Risk Low, Impact 3-Low)
+          # Payload aligned to your instance (Model=DevOps, Type=Normal, Assignment group=Developer)
           change-request: >-
             {"setCloseCode":"true","autoCloseChange":true,
              "attributes":{
-               "chg_model":{"sys_id":"${{ secrets.SN_CHANGE_MODEL_SYS_ID }}"},
-               "category":"DevOps",
-               "short_description":"GitHub Automated Deployment",
-               "description":"Deployment triggered from GitHub Actions pipeline.",
+               "chg_model":"${{ secrets.SN_CHANGE_MODEL_SYS_ID }}",
+               "type":"normal",
+               "category":"Other",
+               "short_description":"GitHub Deployment - run ${{ github.run_number }}",
+               "description":"Automated deployment via GitHub Actions.",
                "assignment_group":"${{ secrets.SN_ASSIGNMENT_GROUP_SYS_ID }}",
+               "priority":"4",
                "risk":"3",
-               "impact":"3",
-               "priority":"4"
+               "impact":"3"
              }}
 
           interval: "100"
@@ -125,10 +121,10 @@ jobs:
           abortOnChangeCreationFailure: true
           abortOnChangeStepTimeout: true
 
-          # Uncomment ONLY if your deployment gate is configured for THIS tool
+          # Uncomment ONLY if you have a deployment gate configured in ServiceNow for this tool
           # deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
 
-      - name: Log created change
+      - name: Log created change outputs
         run: |
           echo "change-request-number=${{ steps.create.outputs.change-request-number }}"
           echo "change-request-sys-id=${{ steps.create.outputs.change-request-sys-id }}"
@@ -136,7 +132,7 @@ jobs:
       - name: Fail if change not created
         run: |
           if [ -z "${{ steps.create.outputs.change-request-number }}" ]; then
-            echo "ServiceNow change was NOT created (output empty). Check the 'ServiceNow Change (Create)' step logs."
+            echo "ServiceNow change was NOT created. Check 'ServiceNow Change (Create)' step logs."
             exit 1
           fi
 
@@ -149,8 +145,8 @@ jobs:
           context-github: ${{ toJSON(github) }}
           change-request-number: ${{ steps.create.outputs.change-request-number }}
           change-request-details: >-
-            {"short_description":"Deployment completed (pipeline update)",
-             "description":"Deployment step finished; updating change from CI/CD pipeline."}
+            {"short_description":"Deployment completed - run ${{ github.run_number }}",
+             "description":"Deployment finished; change updated by GitHub Actions pipeline."}
 
       - name: Final summary
         run: |
