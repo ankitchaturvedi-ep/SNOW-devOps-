@@ -1,3 +1,9 @@
+# CI/CD Pipeline
+# - Tests run on PRs and pushes
+# - Deploy + ServiceNow Change run ONLY on push to main or manual dispatch
+# - Create Change uses SN_CHANGE_MODEL (sys_id or name)
+# - Update Change uses the created CHG number (no hardcoded CHG)
+
 name: CI/CD Pipeline
 
 on:
@@ -37,7 +43,7 @@ jobs:
     name: Deno Test
     runs-on: ubuntu-latest
     steps:
-      - name: Setup repo
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Deno
@@ -72,7 +78,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
 
-    # Avoid running ServiceNow steps on PRs (secrets + governance)
+    # Prevent ServiceNow calls on PRs (esp. fork PRs) where secrets may not be available.
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
     steps:
@@ -104,7 +110,7 @@ jobs:
           context-github: ${{ toJSON(github) }}
           job-name: "Deploy"
 
-          # ✅ IMPORTANT: pass the change model (sys_id recommended)
+          # ✅ Change model (sys_id or exact name) required by your instance policy
           change-model: ${{ secrets.SN_CHANGE_MODEL }}
 
           change-request: >-
@@ -121,6 +127,8 @@ jobs:
           changeCreationTimeOut: "3600"
           abortOnChangeCreationFailure: true
           abortOnChangeStepTimeout: true
+
+          # Keep this only if your deployment gate is configured in ServiceNow for THIS tool
           deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
 
       - name: Log created change
@@ -145,7 +153,7 @@ jobs:
           change-request-number: ${{ steps.create.outputs.change-request-number }}
           change-request-details: >-
             {"short_description":"Hello from CICD Pipeline",
-             "description":"Automated Software Deployment.",
+             "description":"Automated Software Deployment (updated by pipeline).",
              "assignment_group":"a715cd759f2002002920bde8132e7018",
              "implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.",
              "backout_plan":"When software fails in production, the previous software release will be re-deployed.",
