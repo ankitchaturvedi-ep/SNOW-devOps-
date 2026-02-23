@@ -3,19 +3,69 @@ name: CI/CD Pipeline
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
-  deploy:
+  javascript-test:
+    name: JavaScript Test
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+
+  deno-test:
+    name: Deno Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+      - run: echo "Linting..."
+      - run: echo "Running tests..."
+
+  build:
+    name: Build
+    needs: [javascript-test, deno-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Building..."
+
+  deploy:
+    name: Deploy
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy
+      - name: Deploy to prod
         run: echo "Deploying..."
 
-      - name: ServiceNow Change (Standard Template)
+      - name: Preflight ServiceNow secrets
+        run: |
+          test -n "${{ secrets.SN_INSTANCE_URL }}" || (echo "Missing SN_INSTANCE_URL" && exit 1)
+          test -n "${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}" || (echo "Missing SN_DEVOPS_INTEGRATION_TOKEN" && exit 1)
+          test -n "${{ secrets.SN_ORCHESTRATION_TOOL_ID }}" || (echo "Missing SN_ORCHESTRATION_TOOL_ID" && exit 1)
+
+      # 1) Initiate change control (creation happens server-side).
+      #    We do NOT want this step to block the pipeline for 1 hour.
+      - name: ServiceNow Change (Initiate - 5 min max)
         id: create
+        continue-on-error: true
         uses: ServiceNow/servicenow-devops-change@v6.1.0
         with:
           devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
@@ -24,23 +74,88 @@ jobs:
           context-github: ${{ toJSON(github) }}
           job-name: "Deploy"
 
+          # Keep attributes minimal (your instance is strict about some fields).
           change-request: >-
-            {
-              "setCloseCode":"true",
-              "autoCloseChange":true,
-              "attributes":{
-                "type":"standard",
-                "std_change_producer":"${{ secrets.SN_STANDARD_CHANGE_TEMPLATE_SYS_ID }}",
-                "short_description":"GitHub Deployment - ${{ github.run_number }}",
-                "description":"Automated deployment via GitHub Actions"
-              }
-            }
+            {"setCloseCode":"true","autoCloseChange":true,
+             "attributes":{
+               "short_description":"GitHub Deployment - run ${{ github.run_number }}",
+               "description":"Automated deployment via GitHub Actions."
+             }}
 
-          interval: "100"
-          timeout: "3600"
-          changeCreationTimeOut: "3600"
+          interval: "10"
+          timeout: "300"                 # ✅ 5 minutes max
+          changeCreationTimeOut: "120"
+          abortOnChangeCreationFailure: true
+          abortOnChangeStepTimeout: false # ✅ don't fail if callback doesn't arrive
 
-      - name: Debug
+      # 2) Fetch CHG number directly using DevOps API (changeInfo).
+      #    This is the reliable way to get the number without waiting for callback polling.
+      - name: Fetch Change Request Number from ServiceNow (changeInfo API)
+        id: fetch_chg
+        env:
+          SN_INSTANCE_URL: ${{ secrets.SN_INSTANCE_URL }}
+          SN_TOOL_ID: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          SN_TOKEN: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          PIPELINE_NAME: ${{ github.workflow }}        # "CI/CD Pipeline"
+          STAGE_NAME: Deploy                           # job-name you used above
+          BUILD_NUMBER: ${{ github.run_number }}       # GitHub run number
+          BRANCH_NAME: ${{ github.ref_name }}          # main
         run: |
-          echo "CR Number: ${{ steps.create.outputs.change-request-number }}"
-          echo "CR Sys ID: ${{ steps.create.outputs.change-request-sys-id }}"
+          set -euo pipefail
+
+          # Auth format for DevOps APIs (token auth).
+          # Docs show header: Authorization: sn_devops.DevOpsToken <toolId>:<token>
+          AUTH_HEADER="sn_devops.DevOpsToken ${SN_TOOL_ID}:${SN_TOKEN}"
+
+          echo "Querying changeInfo for pipelineName='${PIPELINE_NAME}', stageName='${STAGE_NAME}', buildNumber='${BUILD_NUMBER}', branchName='${BRANCH_NAME}'"
+
+          # Retry for up to ~2 minutes (sometimes SN needs a bit to register the execution)
+          for i in {1..24}; do
+            RESP="$(curl -sS -G \
+              -H "Accept: application/json" \
+              -H "Authorization: ${AUTH_HEADER}" \
+              --data-urlencode "toolId=${SN_TOOL_ID}" \
+              --data-urlencode "pipelineName=${PIPELINE_NAME}" \
+              --data-urlencode "stageName=${STAGE_NAME}" \
+              --data-urlencode "buildNumber=${BUILD_NUMBER}" \
+              --data-urlencode "branchName=${BRANCH_NAME}" \
+              "${SN_INSTANCE_URL}/api/sn_devops/devops/orchestration/changeInfo" || true)"
+
+            # Extract number if present
+            CHG_NUM="$(echo "$RESP" | jq -r '.result.number // empty' 2>/dev/null || true)"
+            CHG_SYSID="$(echo "$RESP" | jq -r '.result.sys_id // empty' 2>/dev/null || true)"
+            FOUND="$(echo "$RESP" | jq -r '.result.changeFound // empty' 2>/dev/null || true)"
+
+            if [ -n "$CHG_NUM" ]; then
+              echo "Found change: $CHG_NUM ($CHG_SYSID)"
+              echo "change-request-number=$CHG_NUM" >> "$GITHUB_OUTPUT"
+              echo "change-request-sys-id=$CHG_SYSID" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Not found yet (attempt $i). changeFound=${FOUND}. Waiting 5s..."
+            sleep 5
+          done
+
+          echo "ERROR: Could not retrieve change number from changeInfo within retry window."
+          echo "Last response:"
+          echo "$RESP"
+          exit 1
+
+      - name: Print change number
+        run: |
+          echo "CHG = ${{ steps.fetch_chg.outputs.change-request-number }}"
+          echo "SYS_ID = ${{ steps.fetch_chg.outputs.change-request-sys-id }}"
+
+      # Optional: update the change (now we have the number)
+      - name: ServiceNow Update Change
+        uses: ServiceNow/servicenow-devops-update-change@v3.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          change-request-number: ${{ steps.fetch_chg.outputs.change-request-number }}
+          change-request-details: >-
+            {"short_description":"Deployment completed - run ${{ github.run_number }}",
+             "description":"Deployment finished; updated by GitHub Actions."}
