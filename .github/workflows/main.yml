@@ -59,11 +59,6 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Deno
-        uses: denoland/setup-deno@v1
-        with:
-          deno-version: v1.x
-
       - name: Build repo
         run: echo "Building..."
 
@@ -100,19 +95,18 @@ jobs:
           context-github: ${{ toJSON(github) }}
           job-name: "Deploy"
 
-          # Payload aligned to your instance (Model=DevOps, Type=Normal, Assignment group=Developer)
+          # FIXES:
+          # - use reference objects for chg_model + assignment_group
+          # - remove fields blocked by API: risk, impact (and priority to be safe)
           change-request: >-
             {"setCloseCode":"true","autoCloseChange":true,
              "attributes":{
-               "chg_model":"${{ secrets.SN_CHANGE_MODEL_SYS_ID }}",
+               "chg_model":{"sys_id":"${{ secrets.SN_CHANGE_MODEL_SYS_ID }}"},
+               "assignment_group":{"sys_id":"${{ secrets.SN_ASSIGNMENT_GROUP_SYS_ID }}"},
                "type":"normal",
                "category":"Other",
                "short_description":"GitHub Deployment - run ${{ github.run_number }}",
-               "description":"Automated deployment via GitHub Actions.",
-               "assignment_group":"${{ secrets.SN_ASSIGNMENT_GROUP_SYS_ID }}",
-               "priority":"4",
-               "risk":"3",
-               "impact":"3"
+               "description":"Automated deployment via GitHub Actions."
              }}
 
           interval: "100"
@@ -120,9 +114,6 @@ jobs:
           changeCreationTimeOut: "3600"
           abortOnChangeCreationFailure: true
           abortOnChangeStepTimeout: true
-
-          # Uncomment ONLY if you have a deployment gate configured in ServiceNow for this tool
-          # deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
 
       - name: Log created change outputs
         run: |
@@ -136,7 +127,7 @@ jobs:
             exit 1
           fi
 
-      - name: ServiceNow Update Change (Update created CHG)
+      - name: ServiceNow Update Change
         uses: ServiceNow/servicenow-devops-update-change@v3.1.0
         with:
           devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
