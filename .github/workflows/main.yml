@@ -1,11 +1,8 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
-# This workflow will install Deno then run `deno lint` and `deno test`.
-# For more information see: https://github.com/denoland/setup-deno
-# Also includes JavaScript testing with Node.js
+# CI/CD Pipeline with ServiceNow DevOps Change:
+# - Runs tests on PRs and pushes
+# - Only creates/updates ServiceNow Change on push to main (secrets-safe + real deploy)
+# - Uses the created change number for the update step (no hardcoded CHG)
+# - Keeps your deployment gate + timeouts
 
 name: CI/CD Pipeline
 
@@ -14,6 +11,7 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -23,75 +21,87 @@ jobs:
     name: JavaScript Test
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20.x'
-        cache: 'npm'
-        
-    - name: Install dependencies
-      run: npm ci
-      
-    - name: Run tests
-      run: npm test
-      
-    - name: Run lint
-      run: npm run lint
-      
-  test:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run lint
+        run: npm run lint
+
+  deno-test:
     name: Deno Test
-    runs-on: ubuntu-latest
-    steps:
-    - name: Setup repo
-      uses: actions/checkout@v4
-      
-    - name: Setup Deno
-      uses: denoland/setup-deno@v1
-      with:
-        deno-version: v1.x
-        
-    - name: Run linter
-      run: echo "Linting..."
-      
-    - name: Run tests
-      run: echo "Running tests..."
-          
-  build:
-    name: Build
-    needs: [javascript-test, test]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-        
+
       - name: Setup Deno
         uses: denoland/setup-deno@v1
         with:
           deno-version: v1.x
-          
+
+      - name: Run linter
+        run: echo "Linting..."
+
+      - name: Run tests
+        run: echo "Running tests..."
+
+  build:
+    name: Build
+    needs: [javascript-test, deno-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+
       - name: Build repo
         run: echo "Building..."
+
   deploy:
     name: Deploy
     needs: [build]
     runs-on: ubuntu-latest
+
+    # Only run deploy + ServiceNow change when pushing to main (or manual dispatch).
+    # This avoids fork PR secret issues and matches "real deployment".
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-        
+
       - name: Setup Deno
         uses: denoland/setup-deno@v1
         with:
           deno-version: v1.x
-          
+
       - name: Deploy to prod
         run: echo "Deploying..."
 
-      - name: ServiceNow Change
-        #continue-on-error: true
+      # Fail fast with a clear error if secrets are missing (won't print values).
+      - name: Preflight ServiceNow secrets
+        run: |
+          test -n "${{ secrets.SN_INSTANCE_URL }}" || (echo "Missing SN_INSTANCE_URL" && exit 1)
+          test -n "${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}" || (echo "Missing SN_DEVOPS_INTEGRATION_TOKEN" && exit 1)
+          test -n "${{ secrets.SN_ORCHESTRATION_TOOL_ID }}" || (echo "Missing SN_ORCHESTRATION_TOOL_ID" && exit 1)
+
+      - name: ServiceNow Change (Create)
         uses: ServiceNow/servicenow-devops-change@v6.1.0
         id: create
         with:
@@ -99,28 +109,47 @@ jobs:
           instance-url: ${{ secrets.SN_INSTANCE_URL }}
           tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
           context-github: ${{ toJSON(github) }}
-          job-name: 'Deploy'
-          change-request: '{"setCloseCode":"true","autoCloseChange":true,"attributes":{"short_description":"Git-Hub Automated Software Deployment","description":"Automated Software Deployment.","assignment_group":"a715cd759f2002002920bde8132e7018","implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.","backout_plan":"When software fails in production, the previous software release will be re-deployed.","test_plan":"Testing if the software was successfully deployed"}}'
-          interval: '100'
-          timeout: '3600'
-          changeCreationTimeOut: '3600'
+          job-name: "Deploy"
+          change-request: >-
+            {"setCloseCode":"true","autoCloseChange":true,
+             "attributes":{
+               "short_description":"Git-Hub Automated Software Deployment",
+               "description":"Automated Software Deployment.",
+               "assignment_group":"a715cd759f2002002920bde8132e7018",
+               "implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.",
+               "backout_plan":"When software fails in production, the previous software release will be re-deployed.",
+               "test_plan":"Testing if the software was successfully deployed"
+             }}
+          interval: "100"
+          timeout: "3600"
+          changeCreationTimeOut: "3600"
           abortOnChangeCreationFailure: true
           abortOnChangeStepTimeout: true
           deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
-          
-      - name: Output of Change Creation
-        run: echo "change-request-number = ${{ steps.create.outputs.change-request-number }} and change-request-sys-id = ${{ steps.create.outputs.change-request-sys-id }} " >> $GITHUB_OUTPUT
 
-      - name: ServiceNow Update Change
-        #continue-on-error: true
+      - name: Log created change
+        run: |
+          echo "change-request-number=${{ steps.create.outputs.change-request-number }}"
+          echo "change-request-sys-id=${{ steps.create.outputs.change-request-sys-id }}"
+
+      - name: ServiceNow Update Change (use created CHG)
+        # Update only if create returned a change number
+        if: ${{ steps.create.outputs.change-request-number != '' }}
         uses: ServiceNow/servicenow-devops-update-change@v3.1.0
         with:
           devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
           tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
           instance-url: ${{ secrets.SN_INSTANCE_URL }}
           context-github: ${{ toJSON(github) }}
-          change-request-number: 'CHG0380544'
-          change-request-details: '{"short_description":"Hello from CICD Pipeline","description":"Automated Software Deployment.","assignment_group":"a715cd759f2002002920bde8132e7018","implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.","backout_plan":"When software fails in production, the previous software release will be re-deployed.","test_plan":"Testing if the software was successfully deployed"}'
-      
-      - name: Output of Change Creation
-        run: echo "change-request-number = ${{ steps.create.outputs.change-request-number }}" >> $GITHUB_OUTPUT
+          change-request-number: ${{ steps.create.outputs.change-request-number }}
+          change-request-details: >-
+            {"short_description":"Hello from CICD Pipeline",
+             "description":"Automated Software Deployment.",
+             "assignment_group":"a715cd759f2002002920bde8132e7018",
+             "implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.",
+             "backout_plan":"When software fails in production, the previous software release will be re-deployed.",
+             "test_plan":"Testing if the software was successfully deployed"}
+
+      - name: Final output
+        run: |
+          echo "final change-request-number=${{ steps.create.outputs.change-request-number }}"
