@@ -82,8 +82,6 @@ jobs:
           test -n "${{ secrets.SN_INSTANCE_URL }}" || (echo "Missing SN_INSTANCE_URL" && exit 1)
           test -n "${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}" || (echo "Missing SN_DEVOPS_INTEGRATION_TOKEN" && exit 1)
           test -n "${{ secrets.SN_ORCHESTRATION_TOOL_ID }}" || (echo "Missing SN_ORCHESTRATION_TOOL_ID" && exit 1)
-          test -n "${{ secrets.SN_CHANGE_MODEL_SYS_ID }}" || (echo "Missing SN_CHANGE_MODEL_SYS_ID" && exit 1)
-          test -n "${{ secrets.SN_ASSIGNMENT_GROUP_SYS_ID }}" || (echo "Missing SN_ASSIGNMENT_GROUP_SYS_ID" && exit 1)
 
       - name: ServiceNow Change (Create)
         uses: ServiceNow/servicenow-devops-change@v6.1.0
@@ -95,19 +93,21 @@ jobs:
           context-github: ${{ toJSON(github) }}
           job-name: "Deploy"
 
-          # FIXES:
-          # - use reference objects for chg_model + assignment_group
-          # - remove fields blocked by API: risk, impact (and priority to be safe)
+          # IMPORTANT:
+          # Your instance rejects sys_id for these reference fields via the DevOps Change API.
+          # Use DISPLAY VALUES (exactly as they appear in the Change form):
+          #   Model = "DevOps"
+          #   Assignment group = "Developer"
           change-request: >-
-  {"setCloseCode":"true","autoCloseChange":true,
-   "attributes":{
-     "chg_model":"DevOps",
-     "assignment_group":"Developer",
-     "type":"normal",
-     "category":"Other",
-     "short_description":"GitHub Deployment - run ${{ github.run_number }}",
-     "description":"Automated deployment via GitHub Actions."
-   }}
+            {"setCloseCode":"true","autoCloseChange":true,
+             "attributes":{
+               "chg_model":"DevOps",
+               "assignment_group":"Developer",
+               "type":"normal",
+               "category":"Other",
+               "short_description":"GitHub Deployment - run ${{ github.run_number }}",
+               "description":"Automated deployment via GitHub Actions."
+             }}
 
           interval: "100"
           timeout: "3600"
