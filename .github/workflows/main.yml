@@ -1,9 +1,3 @@
-# CI/CD Pipeline
-# - Runs tests/build on PRs and pushes
-# - Runs Deploy + ServiceNow Change ONLY on push to main OR manual run (workflow_dispatch)
-# - Creates a change, fails fast if not created, then updates the SAME change (no hardcoded CHG)
-# - Start without deployment-gate (most common cause of “blank outputs”); add it back after this works end-to-end.
-
 name: CI/CD Pipeline
 
 on:
@@ -43,7 +37,7 @@ jobs:
     name: Deno Test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Setup repo
         uses: actions/checkout@v4
 
       - name: Setup Deno
@@ -78,7 +72,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
 
-    # Prevent ServiceNow calls on PRs (especially fork PRs) where secrets may not be available.
+    # Avoid running ServiceNow steps on PRs (secrets + governance)
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
     steps:
@@ -98,6 +92,7 @@ jobs:
           test -n "${{ secrets.SN_INSTANCE_URL }}" || (echo "Missing SN_INSTANCE_URL" && exit 1)
           test -n "${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}" || (echo "Missing SN_DEVOPS_INTEGRATION_TOKEN" && exit 1)
           test -n "${{ secrets.SN_ORCHESTRATION_TOOL_ID }}" || (echo "Missing SN_ORCHESTRATION_TOOL_ID" && exit 1)
+          test -n "${{ secrets.SN_CHANGE_MODEL }}" || (echo "Missing SN_CHANGE_MODEL (Change Model sys_id/name)" && exit 1)
 
       - name: ServiceNow Change (Create)
         uses: ServiceNow/servicenow-devops-change@v6.1.0
@@ -108,24 +103,25 @@ jobs:
           tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
           context-github: ${{ toJSON(github) }}
           job-name: "Deploy"
+
+          # ✅ IMPORTANT: pass the change model (sys_id recommended)
+          change-model: ${{ secrets.SN_CHANGE_MODEL }}
+
           change-request: >-
-            {"setCloseCode":"true","autoCloseChange":true,
-             "attributes":{
-               "short_description":"GitHub Automated Software Deployment",
-               "description":"Automated Software Deployment.",
-               "assignment_group":"a715cd759f2002002920bde8132e7018",
-               "implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.",
-               "backout_plan":"When software fails in production, the previous software release will be re-deployed.",
-               "test_plan":"Testing if the software was successfully deployed"
-             }}
+            {"setCloseCode":"true","autoCloseChange":true,"attributes":{
+              "short_description":"Git-Hub Automated Software Deployment",
+              "description":"Automated Software Deployment.",
+              "assignment_group":"a715cd759f2002002920bde8132e7018",
+              "implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.",
+              "backout_plan":"When software fails in production, the previous software release will be re-deployed.",
+              "test_plan":"Testing if the software was successfully deployed"
+            }}
           interval: "100"
           timeout: "3600"
           changeCreationTimeOut: "3600"
           abortOnChangeCreationFailure: true
           abortOnChangeStepTimeout: true
-
-          # NOTE: Add this back ONLY after you confirm create+update works.
-          # deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
+          deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
 
       - name: Log created change
         run: |
@@ -135,11 +131,11 @@ jobs:
       - name: Fail if change not created
         run: |
           if [ -z "${{ steps.create.outputs.change-request-number }}" ]; then
-            echo "ServiceNow change was NOT created (output empty). Open the 'ServiceNow Change (Create)' step logs to see the reason."
+            echo "ServiceNow change was NOT created (output empty). Check the 'ServiceNow Change (Create)' step logs."
             exit 1
           fi
 
-      - name: ServiceNow Update Change (Update the created CHG)
+      - name: ServiceNow Update Change (Update created CHG)
         uses: ServiceNow/servicenow-devops-update-change@v3.1.0
         with:
           devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
@@ -149,7 +145,7 @@ jobs:
           change-request-number: ${{ steps.create.outputs.change-request-number }}
           change-request-details: >-
             {"short_description":"Hello from CICD Pipeline",
-             "description":"Automated Software Deployment (updated by pipeline).",
+             "description":"Automated Software Deployment.",
              "assignment_group":"a715cd759f2002002920bde8132e7018",
              "implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.",
              "backout_plan":"When software fails in production, the previous software release will be re-deployed.",
