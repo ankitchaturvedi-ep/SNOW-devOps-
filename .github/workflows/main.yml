@@ -1,8 +1,8 @@
-# CI/CD Pipeline with ServiceNow DevOps Change:
-# - Runs tests on PRs and pushes
-# - Only creates/updates ServiceNow Change on push to main (secrets-safe + real deploy)
-# - Uses the created change number for the update step (no hardcoded CHG)
-# - Keeps your deployment gate + timeouts
+# CI/CD Pipeline
+# - Runs tests/build on PRs and pushes
+# - Runs Deploy + ServiceNow Change ONLY on push to main OR manual run (workflow_dispatch)
+# - Creates a change, fails fast if not created, then updates the SAME change (no hardcoded CHG)
+# - Start without deployment-gate (most common cause of “blank outputs”); add it back after this works end-to-end.
 
 name: CI/CD Pipeline
 
@@ -78,8 +78,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
 
-    # Only run deploy + ServiceNow change when pushing to main (or manual dispatch).
-    # This avoids fork PR secret issues and matches "real deployment".
+    # Prevent ServiceNow calls on PRs (especially fork PRs) where secrets may not be available.
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
     steps:
@@ -94,8 +93,7 @@ jobs:
       - name: Deploy to prod
         run: echo "Deploying..."
 
-      # Fail fast with a clear error if secrets are missing (won't print values).
-      - name: Preflight ServiceNow secrets
+      - name: Preflight ServiceNow secrets (safe)
         run: |
           test -n "${{ secrets.SN_INSTANCE_URL }}" || (echo "Missing SN_INSTANCE_URL" && exit 1)
           test -n "${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}" || (echo "Missing SN_DEVOPS_INTEGRATION_TOKEN" && exit 1)
@@ -113,7 +111,7 @@ jobs:
           change-request: >-
             {"setCloseCode":"true","autoCloseChange":true,
              "attributes":{
-               "short_description":"Git-Hub Automated Software Deployment",
+               "short_description":"GitHub Automated Software Deployment",
                "description":"Automated Software Deployment.",
                "assignment_group":"a715cd759f2002002920bde8132e7018",
                "implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.",
@@ -125,31 +123,39 @@ jobs:
           changeCreationTimeOut: "3600"
           abortOnChangeCreationFailure: true
           abortOnChangeStepTimeout: true
-          deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
+
+          # NOTE: Add this back ONLY after you confirm create+update works.
+          # deployment-gate: '{"environment":"deploymentgate","jobName":"Deploy"}'
 
       - name: Log created change
         run: |
           echo "change-request-number=${{ steps.create.outputs.change-request-number }}"
           echo "change-request-sys-id=${{ steps.create.outputs.change-request-sys-id }}"
 
-      - name: ServiceNow Update Change (use created CHG)
-        # Update only if create returned a change number
-        if: ${{ steps.create.outputs.change-request-number != '' }}
+      - name: Fail if change not created
+        run: |
+          if [ -z "${{ steps.create.outputs.change-request-number }}" ]; then
+            echo "ServiceNow change was NOT created (output empty). Open the 'ServiceNow Change (Create)' step logs to see the reason."
+            exit 1
+          fi
+
+      - name: ServiceNow Update Change (Update the created CHG)
         uses: ServiceNow/servicenow-devops-update-change@v3.1.0
         with:
           devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
-          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
           instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
           context-github: ${{ toJSON(github) }}
           change-request-number: ${{ steps.create.outputs.change-request-number }}
           change-request-details: >-
             {"short_description":"Hello from CICD Pipeline",
-             "description":"Automated Software Deployment.",
+             "description":"Automated Software Deployment (updated by pipeline).",
              "assignment_group":"a715cd759f2002002920bde8132e7018",
              "implementation_plan":"Software update is tested and results can be found in Test Summaries Tab; When the change is approved the implementation happens automated by the CICD pipeline within the change planned start and end time window.",
              "backout_plan":"When software fails in production, the previous software release will be re-deployed.",
              "test_plan":"Testing if the software was successfully deployed"}
 
-      - name: Final output
+      - name: Final summary
         run: |
-          echo "final change-request-number=${{ steps.create.outputs.change-request-number }}"
+          echo "DONE: change-request-number=${{ steps.create.outputs.change-request-number }}"
+          echo "DONE: change-request-sys-id=${{ steps.create.outputs.change-request-sys-id }}"
